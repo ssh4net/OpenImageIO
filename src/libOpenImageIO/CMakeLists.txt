@@ -21,15 +21,6 @@ if (NOT USE_EXTERNAL_PUGIXML)
     endif ()
 endif()
 
-# Make the build complete for newer ffmpeg versions (3.1.1+) that have
-# marked m_format_context->streams[i]->codec as deprecated.
-# FIXME -- at some point, come back and figure out how to fix for real
-# before the field disappears entirely.
-if (NOT MSVC)
-    set_source_files_properties (../ffmpeg.imageio/ffmpeginput.cpp
-                             PROPERTIES COMPILE_FLAGS "-Wno-deprecated-declarations")
-endif()
-
 if (CMAKE_COMPILER_IS_GNUCC)
     set_source_files_properties (../libutil/SHA1.cpp
                                  PROPERTIES COMPILE_FLAGS -Wno-stringop-truncation)
@@ -136,8 +127,6 @@ target_include_directories (OpenImageIO
                                 $<INSTALL_INTERFACE:include>
                             ${OPENIMAGEIO_IMATH_DEPENDENCY_VISIBILITY}
                                 ${OPENEXR_INCLUDES}
-                            PRIVATE
-                                ${ROBINMAP_INCLUDES}
                             )
 
 if (NOT BUILD_SHARED_LIBS)
@@ -156,6 +145,7 @@ target_link_libraries (OpenImageIO
             ${OPENIMAGEIO_IMATH_DEPENDENCY_VISIBILITY}
             ${OPENIMAGEIO_IMATH_TARGETS}
         PRIVATE
+            tsl::robin_map
             ${OPENIMAGEIO_OPENEXR_TARGETS}
             ${format_plugin_libs} # Add all the target link libraries from the plugins
             OpenColorIO::OpenColorIO
@@ -278,9 +268,9 @@ if (OIIO_BUILD_TESTS AND BUILD_TESTING)
 
     fancy_add_executable (NAME imagebufalgo_test SRC imagebufalgo_test.cpp
                           SYSTEM_INCLUDE_DIRS
-                                ${ROBINMAP_INCLUDES}
-                                ${OpenCV_INCLUDES}            
+                                ${OpenCV_INCLUDES}
                           LINK_LIBRARIES OpenImageIO
+                                         tsl::robin_map
                                          ${OpenCV_LIBRARIES}
                                          ${OPENIMAGEIO_IMATH_TARGETS}
                           FOLDER "Unit Tests" NO_INSTALL)

@@ -520,9 +520,14 @@ if (${PROJ_NAME}_HARDENING GREATER_EQUAL 1)
     # Defining _FORTIFY_SOURCE provides buffer overflow checks in modern gcc &
     # clang with some compiler-assisted deduction of buffer lengths) for the
     # many C functions such as memcpy, strcpy, sprintf, etc. But it requires
-    # optimization, so we don't do it for debug builds.
-    if ((CMAKE_COMPILER_IS_CLANG OR (GCC_VERSION VERSION_GREATER_EQUAL 14))
-         AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # optimization, so we don't do it for debug builds. It is also incompatible
+    # with the address and memory sanitizers, which predefine _FORTIFY_SOURCE=0
+    # themselves; defining it again would be ineffective and trigger a
+    # -Wmacro-redefined error, so we skip it when such a sanitizer is enabled.
+    if ((CMAKE_COMPILER_IS_CLANG OR CMAKE_COMPILER_IS_APPLECLANG OR
+         GCC_VERSION VERSION_GREATER_EQUAL 14)
+         AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug"
+         AND NOT SANITIZE MATCHES "address|memory")
         add_compile_definitions (_FORTIFY_SOURCE=${${PROJ_NAME}_HARDENING})
     endif ()
 endif ()
@@ -609,7 +614,7 @@ endif ()
 # is being built as a subproject.
 if (PROJECT_IS_TOP_LEVEL)
     set (CLANG_FORMAT_EXE_HINT "" CACHE PATH "clang-format executable's directory (will search if not specified")
-    set (CLANG_FORMAT_INCLUDES "src/*.h" "src/*.cpp testsuite/*.cpp testsuite/*.h"
+    set (CLANG_FORMAT_INCLUDES "src/*.h" "src/*.cpp" "testsuite/*.cpp" "testsuite/*.h"
         CACHE STRING "Glob patterns to include for clang-format")
     set (CLANG_FORMAT_EXCLUDES "*pugixml*" "*SHA1*" "*/farmhash.cpp"
                                "src/dpx.imageio/libdpx/*"

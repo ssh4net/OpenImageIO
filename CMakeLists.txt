@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # https://github.com/AcademySoftwareFoundation/OpenImageIO
 
-cmake_minimum_required (VERSION 3.18.2...4.0)
+cmake_minimum_required (VERSION 3.23.0...4.0)
 
 set (OpenImageIO_VERSION "3.2.0.2")
 set (OpenImageIO_VERSION_OVERRIDE "" CACHE STRING
@@ -29,15 +29,6 @@ if (${PROJECT_NAME}_SUPPORTED_RELEASE)
     set (${PROJECT_NAME}_DEV_RELEASE OFF)
 else ()
     set (${PROJECT_NAME}_DEV_RELEASE ON)
-endif ()
-
-# Set PROJECT_IS_TOP_LEVEL to ON if if this is the top level project (not
-# if this is included as a subproject of something else). Note that this is
-# handled automatically for CMake >= 3.21.
-if (CMAKE_VERSION VERSION_LESS 3.21)
-    if ("${CMAKE_PROJECT_NAME}" STREQUAL "${PROJECT_NAME}")
-        set (PROJECT_IS_TOP_LEVEL ON)
-    endif ()
 endif ()
 
 # Set up module path for our own cmake modules and add some essential ones
@@ -85,6 +76,7 @@ message (STATUS "Project install prefix = ${CMAKE_INSTALL_PREFIX}")
 message (STATUS "Configuration types    = ${CMAKE_CONFIGURATION_TYPES}")
 message (STATUS "Build type             = ${CMAKE_BUILD_TYPE}")
 message (STATUS "Supported release      = ${${PROJECT_NAME}_SUPPORTED_RELEASE}")
+message (STATUS "Project is top level   = ${PROJECT_IS_TOP_LEVEL}")
 
 # Make the build area layout look a bit more like the final dist layout
 if (PROJECT_IS_TOP_LEVEL)
@@ -110,16 +102,16 @@ if (VERBOSE)
 else ()
     set (CMAKE_MESSAGE_LOG_LEVEL "STATUS" CACHE STRING "CMake log level to display")
 endif ()
-option (${PROJ_NAME}_BUILD_TOOLS "Build the command-line tools" ON)
-option (${PROJ_NAME}_BUILD_TESTS "Build the unit tests" ON)
+set_option (${PROJ_NAME}_BUILD_TOOLS "Build the command-line tools" ON)
+set_option (${PROJ_NAME}_BUILD_TESTS "Build the unit tests" ON)
 set_option (OIIO_USE_HWY "Enable experimental Google Highway SIMD optimizations (if Highway is available)" OFF VERBOSE)
 set (OIIO_LIBNAME_SUFFIX "" CACHE STRING
      "Optional name appended to ${PROJECT_NAME} libraries that are built")
-option (BUILD_OIIOUTIL_ONLY "If ON, will build *only* libOpenImageIO_Util" OFF)
-option (BUILD_DOCS "If ON, build documentation and man pages." ON)
-option (INSTALL_DOCS "If ON, install documentation and man pages." ON)
-option (INSTALL_FONTS "If ON, install default fonts" ON)
-option (EMBEDPLUGINS "Embed format plugins in libOpenImageIO" ON)
+set_option (BUILD_OIIOUTIL_ONLY "If ON, will build *only* libOpenImageIO_Util" OFF)
+set_option (BUILD_DOCS "If ON, build documentation and man pages." ON)
+set_option (INSTALL_DOCS "If ON, install documentation and man pages." ON)
+set_option (INSTALL_FONTS "If ON, install default fonts" ON)
+set_option (EMBEDPLUGINS "Embed format plugins in libOpenImageIO" ON)
 set (PLUGIN_SEARCH_PATH "" CACHE STRING "Default plugin search path")
 file (TO_NATIVE_PATH "${PLUGIN_SEARCH_PATH}" PLUGIN_SEARCH_PATH_NATIVE)
 set (CMAKE_DEBUG_POSTFIX "_d" CACHE STRING "Library naming postfix for Debug builds")
@@ -314,10 +306,12 @@ else ()
     set (_py_dev_found Python3_Development.Module_FOUND)
 endif ()
 if (USE_PYTHON AND ${_py_dev_found} AND NOT BUILD_OIIOUTIL_ONLY)
-    if (OIIO_BUILD_PYTHON_PYBIND11)
+    if (OIIO_BUILD_PYTHON_PYBIND11
+            OR OIIO_PYTHON_BINDINGS_BACKEND STREQUAL "nanobind")
         add_subdirectory (src/python)
     endif ()
-    if (OIIO_BUILD_PYTHON_NANOBIND)
+    if (OIIO_BUILD_PYTHON_NANOBIND
+            AND OIIO_PYTHON_BINDINGS_BACKEND STREQUAL "both")
         add_subdirectory (src/python-nanobind)
     endif ()
 else ()
@@ -333,6 +327,11 @@ add_subdirectory (src/fonts)
 if (NUKE_FOUND)
     add_subdirectory (src/nuke/txReader)
     add_subdirectory (src/nuke/txWriter)
+endif ()
+
+set_option (OIIO_BUILD_FUZZ_TARGETS "Build libFuzzer fuzz targets (requires clang)" OFF)
+if (OIIO_BUILD_FUZZ_TARGETS)
+    add_subdirectory (src/fuzz)
 endif ()
 
 # install pkgconfig file
@@ -384,6 +383,9 @@ install (EXPORT OIIO_EXPORTED_TARGETS
 
 
 if (PROJECT_IS_TOP_LEVEL AND BUILD_TESTING AND ${PROJ_NAME}_BUILD_TESTS)
+    if (NOT BUILD_OIIOUTIL_ONLY)
+        add_subdirectory (testsuite/texture-device)
+    endif ()
     oiio_setup_test_data()
     oiio_add_all_tests()
 endif ()

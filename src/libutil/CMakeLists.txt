@@ -58,8 +58,6 @@ function (setup_oiio_util_library targetname)
             PUBLIC
                 $<BUILD_INTERFACE:${OpenImageIO_LOCAL_DEPS_ROOT}/include>
                 $<INSTALL_INTERFACE:include>
-            PRIVATE
-                ${ROBINMAP_INCLUDES}
             )
     target_link_libraries (${targetname}
             PUBLIC
@@ -68,6 +66,7 @@ function (setup_oiio_util_library targetname)
                 ${OPENIMAGEIO_IMATH_DEPENDENCY_VISIBILITY}
                 ${OPENIMAGEIO_IMATH_TARGETS}
             PRIVATE
+                tsl::robin_map
                 $<TARGET_NAME_IF_EXISTS:TBB::tbb>
                 ${CMAKE_DL_LIBS}
             )
@@ -83,7 +82,11 @@ function (setup_oiio_util_library targetname)
 
     if (OIIO_INTERNALIZE_FMT OR fmt_LOCAL_BUILD)
         add_dependencies(${targetname} fmt_internal_target)
-    else ()
+    endif ()
+    if (OIIO_USE_COMPILED_FMT)
+        target_link_libraries (${targetname}
+                               PUBLIC fmt::fmt)
+    elseif (NOT OIIO_INTERNALIZE_FMT AND NOT fmt_LOCAL_BUILD)
         target_link_libraries (${targetname}
                                PUBLIC fmt::fmt-header-only)
     endif ()

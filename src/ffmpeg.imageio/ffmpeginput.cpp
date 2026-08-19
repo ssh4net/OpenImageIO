@@ -34,13 +34,15 @@ extern "C" {  // ffmpeg is a C api
 }
 
 
+static constexpr int ffmpeg_image_align = 64;
+
 inline int
 avpicture_fill(AVFrame* picture, uint8_t* ptr, enum AVPixelFormat pix_fmt,
                int width, int height)
 {
     AVFrame* frame = reinterpret_cast<AVFrame*>(picture);
     return av_image_fill_arrays(frame->data, frame->linesize, ptr, pix_fmt,
-                                width, height, 1);
+                                width, height, ffmpeg_image_align);
 }
 
 
@@ -231,6 +233,7 @@ FFmpegInput::open(const std::string& name, ImageSpec& spec)
         }
     if (!valid_extension) {
         errorfmt("\"{}\" could not open input", name);
+        close();
         return false;
     }
 
@@ -239,10 +242,12 @@ FFmpegInput::open(const std::string& name, ImageSpec& spec)
     if (avformat_open_input(&m_format_context, file_name, NULL, NULL) != 0) {
         // avformat_open_input allocs format_context
         errorfmt("\"{}\" could not open input", file_name);
+        close();
         return false;
     }
     if (avformat_find_stream_info(m_format_context, NULL) < 0) {
         errorfmt("\"{}\" could not find stream info", file_name);
+        close();
         return false;
     }
     m_video_stream = -1;
@@ -257,6 +262,7 @@ FFmpegInput::open(const std::string& name, ImageSpec& spec)
     }
     if (m_video_stream == -1) {
         errorfmt("\"{}\" could not find a valid videostream", file_name);
+        close();
         return false;
     }
     for (unsigned int i = 0; i < m_format_context->nb_streams; i++) {
@@ -274,12 +280,14 @@ FFmpegInput::open(const std::string& name, ImageSpec& spec)
     m_codec = avcodec_find_decoder(par->codec_id);
     if (!m_codec) {
         errorfmt("\"{}\" can't find decoder", file_name);
+        close();
         return false;
     }
 
     m_codec_context = avcodec_alloc_context3(m_codec);
     if (!m_codec_context) {
         errorfmt("\"{}\" can't allocate decoder context", file_name);
+        close();
         return false;
     }
 
@@ -288,11 +296,13 @@ FFmpegInput::open(const std::string& name, ImageSpec& spec)
     ret = avcodec_parameters_to_context(m_codec_context, par);
     if (ret < 0) {
         errorfmt("\"{}\" unsupported codec", file_name);
+        close();
         return false;
     }
 
     if (avcodec_open2(m_codec_context, m_codec, NULL) < 0) {
         errorfmt("\"{}\" could not open codec", file_name);
+        close();
         return false;
     }
     if (!strcmp(m_codec_context->codec->name, "mjpeg")
@@ -490,16 +500,26 @@ FFmpegInput::open(const std::string& name, ImageSpec& spec)
                          nchannels, datatype);
     m_stride = (size_t)(m_spec.scanline_bytes());
 
-    m_rgb_buffer.resize(av_image_get_buffer_size(m_dst_pix_format,
-                                                 m_codec_context->width,
-                                                 m_codec_context->height, 1),
-                        0);
+    int rgb_buffer_size
+        = av_image_get_buffer_size(m_dst_pix_format, m_codec_context->width,
+                                   m_codec_context->height, ffmpeg_image_align);
+    if (rgb_buffer_size <= 0) {
+        errorfmt("\"{}\" invalid FFmpeg RGB buffer size", file_name);
+        close();
+        return false;
+    }
+    m_rgb_buffer.resize(static_cast<size_t>(rgb_buffer_size), 0);
 
     m_sws_rgb_context
         = sws_getContext(m_codec_context->width, m_codec_context->height,
                          src_pix_format, m_codec_context->width,
                          m_codec_context->height, m_dst_pix_format, SWS_AREA,
                          NULL, NULL, NULL);
+    if (!m_sws_rgb_context) {
+        errorfmt("\"{}\" could not create FFmpeg scaling context", file_name);
+        close();
+        return false;
+    }
 
     AVDictionaryEntry* tag = NULL;
     while ((tag = av_dict_get(m_format_context->metadata, "", tag,
@@ -705,12 +725,25 @@ FFmpegInput::read_frame(int frame)
             m_last_search_pos = current_frame;
 
             if (current_frame == frame && finished) {
-                avpicture_fill(m_rgb_frame, &m_rgb_buffer[0], m_dst_pix_format,
-                               m_codec_context->width, m_codec_context->height);
-                sws_scale(m_sws_rgb_context,
-                          static_cast<uint8_t const* const*>(m_frame->data),
-                          m_frame->linesize, 0, m_codec_context->height,
-                          m_rgb_frame->data, m_rgb_frame->linesize);
+                int fill_ret = avpicture_fill(m_rgb_frame, &m_rgb_buffer[0],
+                                              m_dst_pix_format,
+                                              m_codec_context->width,
+                                              m_codec_context->height);
+                if (fill_ret < 0) {
+                    errorfmt("Error filling FFmpeg RGB frame");
+                    av_packet_unref(&pkt);
+                    break;
+                }
+                int scale_ret = sws_scale(
+                    m_sws_rgb_context,
+                    static_cast<uint8_t const* const*>(m_frame->data),
+                    m_frame->linesize, 0, m_codec_context->height,
+                    m_rgb_frame->data, m_rgb_frame->linesize);
+                if (scale_ret <= 0) {
+                    errorfmt("Error converting FFmpeg frame");
+                    av_packet_unref(&pkt);
+                    break;
+                }
                 m_last_decoded_pos = current_frame;
                 av_packet_unref(&pkt);
                 break;

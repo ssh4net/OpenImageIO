@@ -396,7 +396,11 @@ Jpeg2000Input::ojph_read_image()
         = clamped_mult64(clamped_mult64(uint64_t(w), uint64_t(h)),
                          clamped_mult64(uint64_t(ch), uint64_t(buffer_bpp)));
     m_buf.resize(bufsize);
-    codestream.create();
+    try {
+        codestream.create();
+    } catch (const std::runtime_error& e) {
+        errorfmt("openjph exception {}", e.what());
+    }
 
     int file_bit_depth = siz.get_bit_depth(0);  // Assuming RGBA are the same.
 
@@ -406,7 +410,13 @@ Jpeg2000Input::ojph_read_image()
         for (int c = 0; c < ch; ++c)
             for (int i = 0; i < h; ++i) {
                 ojph::ui32 comp_num;
-                ojph::line_buf* line = codestream.pull(comp_num);
+                ojph::line_buf* line = nullptr;
+                try {
+                    line = codestream.pull(comp_num);
+                } catch (const std::runtime_error& e) {
+                    errorfmt("openjph exception {}", e.what());
+                }
+
                 const ojph::si32* sp = line->i32;
                 OIIO_DASSERT(int(comp_num) == c);
                 if (m_spec.format == TypeDesc::UCHAR) {
@@ -430,7 +440,13 @@ Jpeg2000Input::ojph_read_image()
         for (int i = 0; i < h; ++i) {
             for (int c = 0; c < ch; ++c) {
                 ojph::ui32 comp_num;
-                ojph::line_buf* line = codestream.pull(comp_num);
+                ojph::line_buf* line = nullptr;
+                try {
+                    line = codestream.pull(comp_num);
+                } catch (const std::runtime_error& e) {
+                    errorfmt("openjph exception {}", e.what());
+                }
+
                 const ojph::si32* sp = line->i32;
                 OIIO_DASSERT(int(comp_num) == c);
                 if (m_spec.format == TypeDesc::UCHAR) {
@@ -555,24 +571,53 @@ Jpeg2000Input::open(const std::string& name, ImageSpec& p_spec)
         || has_error()) {
         if (!has_error())
             errorfmt("Could not read Jpeg2000 header");
-    }
-    if (!has_error()) {
-        if (!opj_decode(m_codec, m_stream, m_image)) {
-            if (!has_error())
-                errorfmt("Could not decode Jpeg2000 data");
-        }
-    }
-
-    destroy_decompressor();
-    destroy_stream();
-
-    if (has_error()) {
         close();
         return false;
     }
-    OIIO_ASSERT(m_image != nullptr);
 
-    // we support only one, three or four components in image
+    // Check the header-claimed size before the expensive opj_decode. Channel
+    // count can still grow during decode (palette expansion), but that only
+    // makes the image larger, so this is a safe lower-bound estimate.
+    {
+        int w = (m_image->x1 > m_image->x0) ? int(m_image->x1 - m_image->x0)
+                                            : 0;
+        int h = (m_image->y1 > m_image->y0) ? int(m_image->y1 - m_image->y0)
+                                            : 0;
+        uint32_t prov_prec = 0;
+        for (uint32_t c = 0; c < m_image->numcomps; ++c)
+            prov_prec = std::max(prov_prec, m_image->comps[c].prec);
+        ImageSpec provspec(w, h, int(m_image->numcomps),
+                           prov_prec <= 8 ? TypeDesc::UINT8 : TypeDesc::UINT16);
+        provspec.full_width  = m_image->x1;
+        provspec.full_height = m_image->y1;
+        if (!check_open(provspec,
+                        { 0, std::numeric_limits<int>::max(), 0,
+                          std::numeric_limits<int>::max(), 0, 1, 0, 16384 })) {
+            close();
+            return false;
+        }
+
+        // Guard against decompression bombs / corrupt headers: a tiny
+        // codestream claiming a multi-gigabyte image, which opj_decode
+        // would then hang and allocate gigabytes trying to produce.
+        imagesize_t filesize = ioproxy() ? ioproxy()->size() : 0;
+        if (!check_compression_ratio(provspec, filesize)) {
+            close();
+            return false;
+        }
+    }
+
+    if (!opj_decode(m_codec, m_stream, m_image) || has_error()) {
+        if (!has_error())
+            errorfmt("Could not decode Jpeg2000 data");
+        close();
+        return false;
+    }
+    destroy_decompressor();
+    destroy_stream();
+
+    // we support only one, three or four components in image (final only
+    // after decode, since palette expansion can change it)
     const int channelCount = m_image->numcomps;
     if (channelCount != 1 && channelCount != 3 && channelCount != 4) {
         errorfmt(
@@ -581,11 +626,33 @@ Jpeg2000Input::open(const std::string& name, ImageSpec& p_spec)
         return false;
     }
 
+    // The JPEG2000 canvas (x0,y0)-(x1,y1) is the authoritative image size.
+    // Each component samples that canvas at its own subsampling factor.
+    const unsigned int canvas_w = (m_image->x1 > m_image->x0)
+                                      ? m_image->x1 - m_image->x0
+                                      : 0;
+    const unsigned int canvas_h = (m_image->y1 > m_image->y0)
+                                      ? m_image->y1 - m_image->y0
+                                      : 0;
     for (int c = 0; c < channelCount; ++c) {
         const opj_image_comp_t& comp(m_image->comps[c]);
         if (!comp.data) {
             errorfmt("Could not read Jpeg2000 component, no channel data {}",
                      c);
+            close();
+            return false;
+        }
+        // Reject corrupt files whose component geometry is inconsistent with
+        // the image canvas. A subsampling factor must be nonzero and cannot
+        // exceed the canvas (a step larger than the whole image is not a real
+        // image); such values otherwise inflate the derived ImageSpec far
+        // beyond the actual canvas and lead to out-of-bounds reads of the
+        // decoded component data.
+        if (comp.dx == 0 || comp.dy == 0 || comp.dx > canvas_w
+            || comp.dy > canvas_h) {
+            errorfmt(
+                "Invalid Jpeg2000 component {} subsampling {}x{} for {}x{} image",
+                c, comp.dx, comp.dy, canvas_w, canvas_h);
             close();
             return false;
         }
@@ -595,7 +662,6 @@ Jpeg2000Input::open(const std::string& name, ImageSpec& p_spec)
     ROI datawindow;
     m_bpp.clear();
     m_bpp.reserve(channelCount);
-    std::vector<TypeDesc> chantypes(channelCount, TypeDesc::UINT8);
     for (int i = 0; i < channelCount; i++) {
         const opj_image_comp_t& comp(m_image->comps[i]);
         m_bpp.push_back(comp.prec);
@@ -603,17 +669,7 @@ Jpeg2000Input::open(const std::string& name, ImageSpec& p_spec)
         ROI roichan(comp.x0, comp.x0 + comp.w * comp.dx, comp.y0,
                     comp.y0 + comp.h * comp.dy);
         datawindow = roi_union(datawindow, roichan);
-        // std::cout << "  chan " << i << "\n";
-        // std::cout << "     dx=" << comp.dx << " dy=" << comp.dy
-        //           << " x0=" << comp.x0 << " y0=" << comp.y0
-        //           << " w=" << comp.w << " h=" << comp.h
-        //           << " prec=" << comp.prec << " bpp=" << comp.bpp << "\n";
-        // std::cout << "     sgnd=" << comp.sgnd << " resno_decoded=" << comp.resno_decoded << " factor=" << comp.factor << "\n";
-        // std::cout << "     roichan=" << roichan << "\n";
     }
-    // std::cout << "overall x0=" << m_image->x0 << " y0=" << m_image->y0
-    //           << " x1=" << m_image->x1 << " y1=" << m_image->y1 << "\n";
-    // std::cout << "color_space=" << m_image->color_space << "\n";
     TypeDesc format = (maxPrecision <= 8) ? TypeDesc::UINT8 : TypeDesc::UINT16;
     m_spec   = ImageSpec(datawindow.width(), datawindow.height(), channelCount,
                          format);
@@ -624,7 +680,7 @@ Jpeg2000Input::open(const std::string& name, ImageSpec& p_spec)
     m_spec.full_width  = m_image->x1;
     m_spec.full_height = m_image->y1;
 
-    // Validation of resolution
+    // Validation of resolution, now authoritative with the final channel count
     if (!check_open(m_spec,
                     { 0, std::numeric_limits<int>::max(), 0,
                       std::numeric_limits<int>::max(), 0, 1, 0, 16384 })) {
@@ -647,6 +703,7 @@ Jpeg2000Input::open(const std::string& name, ImageSpec& p_spec)
         if (!ok && OIIO::get_int_attribute("imageinput:strict")) {
             errorfmt("Possible corrupt file, could not decode ICC profile: {}\n",
                      errormsg);
+            close();
             return false;
         }
     }
@@ -784,15 +841,25 @@ Jpeg2000Input::copy_scanline(int y, int /*z*/, void* data)
     int bits = sizeof(T) * 8;
     for (int c = 0; c < nc; ++c) {
         const opj_image_comp_t& comp(m_image->comps[c]);
-        int chan_ybegin = comp.y0, chan_yend = comp.y0 + comp.h * comp.dy;
-        int chan_xend = comp.w * comp.dx;
-        int yoff      = (y - comp.y0) / comp.dy;
+        // The decoded component data is a comp.w x comp.h array of samples,
+        // possibly subsampled by comp.dx/comp.dy relative to the full image.
+        // A malformed file can have component geometry that doesn't match the
+        // image spec, so bounds-check every access against the actual array
+        // rather than trusting the dimensions to line up.
+        if (!comp.data || comp.dx == 0 || comp.dy == 0) {
+            for (int x = 0; x < m_spec.width; ++x)
+                scanline[x * nc + c] = T(0);
+            continue;
+        }
+        int comp_row = (y - int(comp.y0)) / int(comp.dy);
         for (int x = 0; x < m_spec.width; ++x) {
-            if (yoff < chan_ybegin || yoff >= chan_yend || x > chan_xend) {
+            int comp_col = x / int(comp.dx);
+            if (comp_row < 0 || comp_row >= int(comp.h) || comp_col < 0
+                || comp_col >= int(comp.w)) {
                 // Outside the window of this channel
                 scanline[x * nc + c] = T(0);
             } else {
-                unsigned int val = comp.data[yoff * comp.w + x / comp.dx];
+                unsigned int val = comp.data[comp_row * comp.w + comp_col];
                 if (comp.sgnd)
                     val += (1 << (bits / 2 - 1));
                 scanline[x * nc + c] = (T)bit_range_convert(val, comp.prec,

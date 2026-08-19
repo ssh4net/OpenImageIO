@@ -182,12 +182,18 @@ BmpInput::open(const std::string& name, ImageSpec& newspec,
     //     m_dib_header.size, m_dib_header.size, m_dib_header.width,
     //     m_dib_header.height, m_dib_header.cplanes, m_dib_header.bpp);
 
-    const int nchannels = (m_dib_header.bpp == 32) ? 4 : 3;
-    const int height    = (m_dib_header.height >= 0) ? m_dib_header.height
-                                                     : -m_dib_header.height;
-    m_spec = ImageSpec(m_dib_header.width, height, nchannels, TypeDesc::UINT8);
-    if (!check_open(m_spec, { 0, 1 << 16, 0, 1 << 16, 0, 1, 0, 4 }))
+    const int nchannels  = (m_dib_header.bpp == 32) ? 4 : 3;
+    const int64_t height = (m_dib_header.height >= 0)
+                               ? int64_t(m_dib_header.height)
+                               : -int64_t(m_dib_header.height);
+
+    m_spec = ImageSpec(m_dib_header.width, int(height), nchannels,
+                       TypeDesc::UINT8);
+    if (!check_open(m_spec, { 0, 1 << 16, 0, 1 << 16, 0, 1, 0, 4 })
+        || !check_compression_ratio(m_spec, ioproxy()->size())) {
+        close();
         return false;
+    }
 
     if (m_dib_header.hres > 0 && m_dib_header.vres > 0) {
         m_spec.attribute("XResolution", (int)m_dib_header.hres);
@@ -220,8 +226,10 @@ BmpInput::open(const std::string& name, ImageSpec& newspec,
         break;
     case 8:
         m_padded_scanline_size = (m_spec.width + 3) & ~3;
-        if (!read_color_table())
+        if (!read_color_table()) {
+            close();
             return false;
+        }
         m_allgray = monodetect && color_table_is_all_gray();
         if (m_allgray) {
             m_spec.nchannels = 1;  // make it look like a 1-channel image
@@ -231,17 +239,22 @@ BmpInput::open(const std::string& name, ImageSpec& newspec,
     case 4:
         swidth                 = (m_spec.width + 1) / 2;
         m_padded_scanline_size = (swidth + 3) & ~3;
-        if (!read_color_table())
+        if (!read_color_table()) {
+            close();
             return false;
+        }
         break;
     case 1:
         swidth                 = (m_spec.width + 7) / 8;
         m_padded_scanline_size = (swidth + 3) & ~3;
-        if (!read_color_table())
+        if (!read_color_table()) {
+            close();
             return false;
+        }
         break;
     default:
         errorfmt("Unsupported BMP bit depth: {}", m_dib_header.bpp);
+        close();
         return false;
     }
     if (m_dib_header.bpp <= 16)
@@ -257,6 +270,7 @@ BmpInput::open(const std::string& name, ImageSpec& newspec,
         errorfmt(
             "BMP error: bad BPP ({}) for palette image -- presumed corrupt file",
             m_dib_header.bpp);
+        close();
         return false;
     }
 
@@ -387,7 +401,7 @@ BmpInput::read_native_scanline(int subimage, int miplevel, int y, int /*z*/,
     if (!seek_subimage(subimage, miplevel))
         return false;
 
-    if (y < 0 || y > m_spec.height)
+    if (y < 0 || y >= m_spec.height)
         return false;
 
     size_t scanline_bytes = m_spec.scanline_bytes();
@@ -425,9 +439,19 @@ BmpInput::read_native_scanline(int subimage, int miplevel, int y, int /*z*/,
     if (m_dib_header.height >= 0)
         y = m_spec.height - y - 1;
     const int64_t scanline_off = y * m_padded_scanline_size;
+    const int64_t scanline_pos = int64_t(m_bmp_header.offset) + scanline_off;
+
+    // A corrupt header can place the scanline outside the file. The IOProxy
+    // will reject such a read, but validate the position explicitly so we
+    // fail cleanly instead of relying on a bad seek being caught downstream.
+    if (m_padded_scanline_size < 0 || scanline_pos < 0
+        || scanline_pos + m_padded_scanline_size > int64_t(ioproxy()->size())) {
+        errorfmt("Invalid scanline position in BMP file");
+        return false;
+    }
 
     fscanline.resize(m_padded_scanline_size);
-    ioseek(m_bmp_header.offset + scanline_off);
+    ioseek(scanline_pos);
     if (!ioread(fscanline.data(), m_padded_scanline_size)) {
         return false;  // Read failed
     }

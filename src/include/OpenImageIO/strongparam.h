@@ -83,8 +83,8 @@ OIIO_NAMESPACE_3_1_BEGIN
 /// you use it in the function, it implicitly converts to the underlying
 /// base type.
 ///
-/// As an alternative to `OIIO_STRONG_TYPE(Meters, float)`, you may also use
-/// this notation (if you find it more pleasing):
+/// As an alternative to `OIIO_STRONG_PARAM_TYPE(Meters, float)`, you may
+/// also use this notation (if you find it more pleasing):
 ///
 ///     using Meters = StrongParam<struct MetersTag, float>;
 ///
@@ -107,7 +107,8 @@ template<typename Tag, typename Basetype> struct StrongParam {
 
 private:
     Basetype m_val;
-    static_assert(std::is_trivial<Basetype>::value, "Need trivial type");
+    static_assert(std::is_trivially_copyable_v<Basetype>,
+                  "Need trivially copyable type");
 };
 
 OIIO_NAMESPACE_3_1_END

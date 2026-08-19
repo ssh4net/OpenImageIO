@@ -39,13 +39,14 @@ extern std::string extension_list;
 extern std::string library_list;
 extern OIIO_UTIL_API int oiio_print_debug;
 extern OIIO_UTIL_API int oiio_print_uncaught_errors;
-extern int oiio_log_times;
-extern int openexr_core;
+extern OIIO_API int oiio_log_times;
+extern OIIO_API int openexr_core;
 extern int jpeg_com_attributes;
 extern int png_linear_premult;
 extern int enable_hwy;
 extern int limit_channels;
 extern int limit_imagesize_MB;
+extern int limit_resolution;
 extern int imagebuf_print_uncaught_errors;
 extern int imagebuf_use_imagecache;
 extern int imageinput_strict;
@@ -131,6 +132,11 @@ parallel_convert_from_float(const float* src, void* dst, size_t nvals,
 /// incorrect files and it was fixed.
 OIIO_API bool
 check_texture_metadata_sanity(ImageSpec& spec);
+
+/// If the spec's metadata specifies a color space with Rec709 primaries and
+/// gamma transfer function, return the gamma value. If not, return zero.
+OIIO_API float
+get_colorspace_rec709_gamma(const ImageSpec& spec);
 
 /// Get the timing report from log_time entries.
 OIIO_API std::string
@@ -287,5 +293,31 @@ device_free(void* mem);
 
 
 OIIO_NAMESPACE_END
+
+
+OIIO_NAMESPACE_3_1_BEGIN
+namespace pvt {
+/// Test harness for reading an image, analogous to calling
+/// ImageInput::read_image(), but it doesn't return pixels and does as little
+/// extraneous allocation as possible. What is this good for? (1) Benchmarking
+/// just the read itself; (2) Fuzz testing; (3) Debugging the code path where
+/// fuzz testing revealed a specific error.
+OIIO_API bool
+test_read_image(ImageInput& inp, int subimage, int miplevel,
+                TypeDesc format = TypeUInt8);
+
+/// Read all subimage and MIP levels of the open file.
+OIIO_API bool
+test_read_all_images(ImageInput& inp, TypeDesc format = TypeUInt8);
+}  // namespace pvt
+OIIO_NAMESPACE_3_1_END
+
+OIIO_NAMESPACE_BEGIN
+namespace pvt {
+using v3_1::pvt::test_read_all_images;
+using v3_1::pvt::test_read_image;
+}  // namespace pvt
+OIIO_NAMESPACE_END
+
 
 #endif  // OPENIMAGEIO_IMAGEIO_PVT_H

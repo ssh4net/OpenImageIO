@@ -83,12 +83,19 @@ private:
 };
 
 
+// Defined in heifinput.cpp. Declare here at C++ namespace scope (not inside
+// the extern "C" block below) so the linkage matches the definition in the
+// non-embedded (dynamic plugin) build where OIIO_PLUGIN_EXPORTS_BEGIN is
+// `extern "C"`.
+extern void
+oiio_heif_init();
+
+
 OIIO_PLUGIN_EXPORTS_BEGIN
 
 OIIO_EXPORT ImageOutput*
 heif_output_imageio_create()
 {
-    extern void oiio_heif_init();
     oiio_heif_init();
     return new HeifOutput;
 }
@@ -103,7 +110,7 @@ bool
 HeifOutput::open(const std::string& name, const ImageSpec& newspec,
                  OpenMode mode)
 {
-    if (!check_open(mode, newspec, { 0, 1 << 20, 0, 1 << 20, 0, 1, 0, 4 },
+    if (!check_open(mode, newspec, { 0, 1 << 30, 0, 1 << 30, 0, 1, 0, 4 },
                     uint64_t(OpenChecks::Disallow2Channel)))
         return false;
 
@@ -268,12 +275,7 @@ HeifOutput::close()
         std::unique_ptr<heif_color_profile_nclx,
                         void (*)(heif_color_profile_nclx*)>
             nclx(heif_nclx_color_profile_alloc(), heif_nclx_color_profile_free);
-        const ColorConfig& colorconfig(ColorConfig::default_colorconfig());
-        const ParamValue* p    = m_spec.find_attribute("CICP",
-                                                       TypeDesc(TypeDesc::INT, 4));
-        string_view colorspace = m_spec.get_string_attribute("oiio:ColorSpace");
-        cspan<int> cicp        = (p) ? p->as_cspan<int>()
-                                     : colorconfig.get_cicp(colorspace);
+        cspan<int> cicp = get_colorspace_cicp(m_spec);
         if (!cicp.empty()) {
             nclx->color_primaries          = heif_color_primaries(cicp[0]);
             nclx->transfer_characteristics = heif_transfer_characteristics(

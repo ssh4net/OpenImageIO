@@ -207,11 +207,10 @@ private:
 
     bool copy_and_check_spec(const ImageSpec& srcspec, ImageSpec& dstspec)
     {
-        // Arbitrarily limit res to 1M x 1M and 4k channels, assuming anything
-        // beyond that is more likely to be a mistake than a legit request. We
-        // may have to come back to this if these assumptions are wrong.
+        // Limit channels to 4k; actual per-dimension resolution limits are
+        // enforced separately via the "limits:resolution" attribute.
         if (!check_open(Create, srcspec,
-                        { 0, 1 << 20, 0, 1 << 20, 0, 1, 0, 1 << 12 }))
+                        { 0, 1 << 30, 0, 1 << 30, 0, 1, 0, 1 << 12 }))
             return false;
         if (&dstspec != &m_spec)
             dstspec = m_spec;
@@ -866,14 +865,28 @@ bool
 OpenEXROutput::spec_to_header(ImageSpec& spec, int subimage,
                               Imf::Header& header)
 {
-    // Force use of one of the three data types that OpenEXR supports
-    switch (spec.format.basetype) {
-    case TypeDesc::UINT: spec.format = TypeDesc::UINT; break;
-    case TypeDesc::FLOAT:
-    case TypeDesc::DOUBLE: spec.format = TypeDesc::FLOAT; break;
-    default:
-        // Everything else defaults to half
-        spec.format = TypeDesc::HALF;
+    // OpenEXR only stores three data types (half, float, uint); map anything
+    // else onto them. Do this for the overall format and, so the spec stays
+    // consistent with what is actually stored, for any per-channel formats.
+    auto exr_stored_format = [](TypeDesc t) -> TypeDesc {
+        switch (t.basetype) {
+        case TypeDesc::UINT: return TypeDesc::UINT;
+        case TypeDesc::FLOAT:
+        case TypeDesc::DOUBLE: return TypeDesc::FLOAT;
+        default: return TypeDesc::HALF;  // everything else defaults to half
+        }
+    };
+    spec.format = exr_stored_format(spec.format);
+    if (spec.channelformats.size() == size_t(spec.nchannels)) {
+        bool allsame = true;
+        for (int c = 0; c < spec.nchannels; ++c) {
+            spec.channelformats[c] = exr_stored_format(spec.channelformats[c]);
+            allsame &= (spec.channelformats[c] == spec.channelformats[0]);
+        }
+        // If every channel ended up the same, the per-channel list is
+        // redundant -- drop it so the spec advertises a single format.
+        if (allsame)
+            spec.channelformats.clear();
     }
 
     Imath::Box2i dataWindow(Imath::V2i(spec.x, spec.y),

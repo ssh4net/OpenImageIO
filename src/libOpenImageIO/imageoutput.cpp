@@ -26,12 +26,34 @@
 
 
 OIIO_NAMESPACE_3_1_BEGIN
+
+
+static int
+safe_rows_per_strip(const ImageSpec& spec)
+{
+    int rps = spec.get_int_attribute("tiff:RowsPerStrip", 64);
+    return rps > 0 ? rps : 64;
+}
+
+
 using namespace pvt;
 using namespace OIIO::pvt;
 
 
-// store an error message per thread, for a specific ImageInput
-static thread_local tsl::robin_map<uint64_t, std::string> output_error_messages;
+// Store an error message per thread, for a specific ImageOutput (keyed by
+// the ImageOutput's unique id). Wrapped in a small struct carrying an "alive"
+// flag set false by its own destructor, so that an ImageOutput destroyed
+// during thread/program teardown -- after this thread_local has already been
+// destroyed (the static destruction order fiasco) -- can detect that and skip
+// touching the dead map.
+namespace {
+struct OutputErrorMessages {
+    tsl::robin_map<uint64_t, std::string> map;
+    bool alive = true;
+    ~OutputErrorMessages() { alive = false; }
+};
+}  // namespace
+static thread_local OutputErrorMessages output_error_messages;
 static std::atomic_int64_t output_next_id(0);
 
 
@@ -94,10 +116,14 @@ ImageOutput::ImageOutput()
 
 ImageOutput::~ImageOutput()
 {
-    // Erase any leftover errors from this thread
-    // TODO: can we clear other threads' errors?
-    // TODO: potentially unsafe due to the static destruction order fiasco
-    // output_error_messages.erase(this);
+    // Erase any leftover error for this ImageOutput so the per-thread map does
+    // not grow without bound when many outputs are created. Guard against the
+    // static destruction order fiasco: if the thread_local map has already
+    // been destroyed, its 'alive' flag is false and we must not touch it.
+    // TODO: this only clears the entry if we are destroyed on the same thread
+    // that accumulated the error; cross-thread errors still leak.
+    if (output_error_messages.alive)
+        output_error_messages.map.erase(m_impl->m_id);
 }
 
 
@@ -392,7 +418,7 @@ ImageOutput::append_error(string_view message) const
 {
     if (message.size() && message.back() == '\n')
         message.remove_suffix(1);
-    std::string& err_str = output_error_messages[m_impl->m_id];
+    std::string& err_str = output_error_messages.map[m_impl->m_id];
     OIIO_DASSERT(
         err_str.size() < 1024 * 1024 * 16
         && "Accumulated error messages > 16MB. Try checking return codes!");
@@ -665,7 +691,7 @@ ImageOutput::write_image(TypeDesc format, const void* data, stride_t xstride,
     } else {  // Scanline image
         // Split into reasonable chunks -- try to use around 64 MB, but
         // round up to a multiple of the TIFF rows per strip (or 64).
-        int rps   = m_spec.get_int_attribute("tiff:RowsPerStrip", 64);
+        int rps   = safe_rows_per_strip(m_spec);
         int chunk = std::max(1, (1 << 26) / int(m_spec.scanline_bytes(true)));
         chunk     = round_to_multiple(chunk, rps);
 
@@ -765,6 +791,19 @@ ImageOutput::copy_image(ImageInput* in)
     // FIXME -- a smarter implementation would read scanlines or tiles at
     // a time, to minimize mem footprint.
     bool native = supports("channelformats") && inspec.channelformats.size();
+    // The native (per-channel, no-conversion) copy is only valid if this
+    // output actually stores each channel in the same format the input
+    // supplies. If the output remaps any channel (e.g. OpenEXR promoting
+    // uint16 to half), a raw native copy would reinterpret the bytes rather
+    // than convert them, so fall back to the converting path in that case.
+    if (native) {
+        const ImageSpec& outspec(spec());
+        for (int c = 0; c < inspec.nchannels; ++c)
+            if (inspec.channelformat(c) != outspec.channelformat(c)) {
+                native = false;
+                break;
+            }
+    }
     TypeDesc format = native ? TypeDesc::UNKNOWN : inspec.format;
     std::unique_ptr<char[]> pixels(new char[inspec.image_bytes(native)]);
     bool ok = in->read_image(in->current_subimage(), in->current_miplevel(), 0,
@@ -859,8 +898,8 @@ ImageOutput::copy_tile_to_image_buffer(int x, int y, int z, TypeDesc format,
 bool
 ImageOutput::has_error() const
 {
-    auto iter = output_error_messages.find(m_impl->m_id);
-    if (iter == output_error_messages.end())
+    auto iter = output_error_messages.map.find(m_impl->m_id);
+    if (iter == output_error_messages.map.end())
         return false;
     return iter.value().size() > 0;
 }
@@ -871,11 +910,11 @@ std::string
 ImageOutput::geterror(bool clear) const
 {
     std::string e;
-    auto iter = output_error_messages.find(m_impl->m_id);
-    if (iter != output_error_messages.end()) {
+    auto iter = output_error_messages.map.find(m_impl->m_id);
+    if (iter != output_error_messages.map.end()) {
         e = iter.value();
         if (clear)
-            output_error_messages.erase(iter);
+            output_error_messages.map.erase(iter);
     }
     return e;
 }
@@ -1151,6 +1190,15 @@ ImageOutput::check_open(OpenMode mode, const ImageSpec& userspec, ROI range,
     if (m_spec.extra_attribs.contains("ioproxy") && !supports("ioproxy")) {
         errorfmt("{} does not support the IOProxy", format_name());
         return false;
+    }
+
+    // Don't write thumbnail_* metadata to a format that can't embed a
+    // thumbnail, where they'd describe one that isn't there.
+    if (!supports("thumbnail")) {
+        m_spec.erase_attribute("thumbnail_width");
+        m_spec.erase_attribute("thumbnail_height");
+        m_spec.erase_attribute("thumbnail_nchannels");
+        m_spec.erase_attribute("thumbnail_image");
     }
 
     return true;  // all is ok

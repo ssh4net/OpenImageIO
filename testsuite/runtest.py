@@ -337,7 +337,8 @@ def iconvert (args: str, silent: bool=False, concat: bool=True,
 
 
 # Construct a command that will run oiiotool and append its output to out.txt
-def oiiotool (args: str, silent: bool=False, concat: bool=True, failureok: bool=False) -> str:
+def oiiotool (args: str, silent: bool=False, concat: bool=True,
+             failureok: bool=False) -> str:
     cmd = (oiio_app("oiiotool") + " " + args)
     if not silent :
         cmd += redirect
@@ -425,6 +426,11 @@ def runtest (command: str, outputs: list[str], failureok: int=0) -> int :
             print ("#### Error: this command failed: ", sub_command)
             print ("FAIL")
             err = 1
+            if os.path.isfile("build.txt") :
+                print ("---   BUILD LOG   ---\n")
+                with open("build.txt", "r") as fbuild :
+                    print (fbuild.read())
+                print ("--- END BUILD LOG ---\n")
 
     for out in outputs :
         (prefix, extension) = os.path.splitext(out)

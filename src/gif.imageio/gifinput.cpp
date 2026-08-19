@@ -3,10 +3,17 @@
 // https://github.com/AcademySoftwareFoundation/OpenImageIO
 
 #include <fcntl.h>
+#include <limits>
 #include <memory>
 #include <vector>
 
+// Prevent a conflict between gif_lib.h's reallocarray declaration (no
+// exception spec) and glibc's stdlib.h version (noexcept/__THROW). Clang
+// treats the mismatch as a hard error in C++ mode. We rename it away here
+// since gifinput.cpp never calls reallocarray directly.
+#define reallocarray giflib_reallocarray_private_
 #include <gif_lib.h>
+#undef reallocarray
 
 #include <OpenImageIO/filesystem.h>
 #include <OpenImageIO/imageio.h>
@@ -203,11 +210,16 @@ GIFInput::read_native_scanline(int subimage, int miplevel, int y, int /*z*/,
     if (!seek_subimage(subimage, miplevel))
         return false;
 
-    if (y < 0 || y > m_spec.height || !m_canvas.size())
+    if (y < 0 || y >= m_spec.height || m_canvas.empty())
         return false;
 
-    memcpy(data, &m_canvas[y * m_spec.width * m_spec.nchannels],
-           m_spec.width * m_spec.nchannels);
+    size_t scanline_bytes = m_spec.scanline_bytes();
+    size_t offset         = size_t(y) * scanline_bytes;
+    if (scanline_bytes > m_canvas.size()
+        || offset > m_canvas.size() - scanline_bytes)
+        return false;
+
+    memcpy(data, m_canvas.data() + offset, scanline_bytes);
 
     return true;
 }
@@ -220,6 +232,12 @@ GIFInput::read_gif_extension(int ext_code, GifByteType* ext, ImageSpec& newspec)
     if (ext_code == GRAPHICS_EXT_FUNC_CODE) {
         // read background color index, disposal method and delay time between frames
         // http://giflib.sourceforge.net/whatsinagif/bits_and_bytes.html#graphics_control_extension_block
+
+        // ext[0] is the sub-block byte count; a well-formed graphics control
+        // block is 4 bytes. A corrupt file can declare fewer, so bail before
+        // reading ext[1..4] out of the giflib-provided buffer.
+        if (ext[0] < 4)
+            return;
 
         if (ext[1] & 0x01) {
             m_transparent_color = (int)ext[4];
@@ -337,7 +355,13 @@ GIFInput::read_subimage_data()
 
     if (m_subimage == 0 || m_previous_disposal_method == DISPOSE_BACKGROUND) {
         // make whole canvas transparent
-        std::fill(m_canvas.begin(), m_canvas.end(), 0x00);
+        size_t canvas_pixels = m_spec.image_pixels();
+        if (canvas_pixels > std::numeric_limits<int>::max() / size_t(4)) {
+            errorfmt("GIF image canvas is too large");
+            return false;
+        }
+        m_canvas.clear();
+        m_canvas.resize(canvas_pixels * size_t(4), 0x00);
     }
 
     // decode scanline index if image is interlaced
@@ -364,9 +388,16 @@ GIFInput::read_subimage_data()
                         fscanline[wx], wx, y, colormap_count);
                     return false;
                 }
-                int x   = window_left + wx;
-                int idx = m_spec.nchannels * (y * m_spec.width + x);
+                int x = window_left + wx;
                 if (0 <= x && x < m_spec.width) {
+                    size_t nchannels = size_t(m_spec.nchannels);
+                    size_t row       = size_t(y) * size_t(m_spec.width);
+                    size_t idx       = (row + size_t(x)) * nchannels;
+                    if (idx > m_canvas.size()
+                        || nchannels > m_canvas.size() - idx) {
+                        errorfmt("GIF pixel index is outside the canvas");
+                        return false;
+                    }
                     m_canvas[idx]     = colormap[fscanline[wx]].Red;
                     m_canvas[idx + 1] = colormap[fscanline[wx]].Green;
                     m_canvas[idx + 2] = colormap[fscanline[wx]].Blue;
@@ -412,7 +443,6 @@ GIFInput::seek_subimage(int subimage, int miplevel)
             return false;
         }
         m_subimage = -1;
-        m_canvas.resize(m_gif_file->SWidth * m_gif_file->SHeight * 4);
     }
 
     // skip subimages preceding the requested one
@@ -436,6 +466,11 @@ GIFInput::seek_subimage(int subimage, int miplevel)
     m_spec.full_width  = m_spec.width;
     m_spec.full_depth  = m_spec.depth;
 
+    if (!check_open(m_spec, { 0, 32768, 0, 32768, 0, 1, 0, 4 })
+        || !check_compression_ratio(m_spec, ioproxy()->size())) {
+        return false;
+    }
+
     m_subimage = subimage;
 
     // draw subimage on canvas
@@ -453,7 +488,8 @@ GIFInput::report_last_error(void)
 {
     // GIFLIB_MAJOR >= 5 looks properly thread-safe, in that the error is
     // guaranteed to be specific to this open file.
-    errorfmt("{}", GifErrorString(m_gif_file->Error));
+    const char* err = GifErrorString(m_gif_file->Error);
+    errorfmt("{}", (err && err[0]) ? err : "unknown error");
 }
 
 
