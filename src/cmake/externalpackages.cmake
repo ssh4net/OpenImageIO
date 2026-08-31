@@ -82,7 +82,8 @@ if (TARGET libjpeg-turbo::jpeg) # Try to find the non-turbo version
     set (JPEG_FOUND TRUE)
 else ()
     # Try to find the non-turbo version
-    checked_find_package (JPEG REQUIRED)
+    checked_find_package (JPEG REQUIRED
+                          VERSION_MIN 9.0)
 endif ()
 
 
@@ -103,7 +104,7 @@ if (NOT TARGET Deflate::Deflate)
 endif ()
 
 checked_find_package (TIFF REQUIRED
-                      VERSION_MIN 4.0
+                      VERSION_MIN 4.1
                       RECOMMEND_MIN 4.5
                       RECOMMEND_MIN_REASON "4.2+ for GPS, 4.5+ various security fixes")
 alias_library_if_not_exists (TIFF::TIFF TIFF::tiff)
@@ -137,7 +138,8 @@ endif ()
 if (USE_PYTHON AND OIIO_BUILD_PYTHON_NANOBIND)
     discover_nanobind_cmake_dir()
     checked_find_package (nanobind CONFIG REQUIRED
-                          VERSION_MIN 2.8.0
+                          VERSION_MIN 2.8.0 VERSION_MAX 3.9
+                          NO_FP_RANGE_CHECK
                           BUILD_LOCAL missing)
 endif ()
 
