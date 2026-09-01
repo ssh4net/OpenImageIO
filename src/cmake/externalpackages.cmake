@@ -221,6 +221,19 @@ endif ()
 
 checked_find_package (WebP VERSION_MIN 1.1)
 
+# OpenMeta is an experimental, optional metadata decoder. Keep it disabled by
+# default until individual format integrations have established behavior and
+# performance parity.
+option (USE_OPENMETA "Enable experimental OpenMeta metadata decoding" OFF)
+checked_find_package (OpenMeta CONFIG
+                      VERSION_MIN 0.4.118)
+if (OpenMeta_FOUND AND NOT TARGET OpenMeta::openmeta)
+    message (WARNING
+             "OpenMeta was found without an OpenMeta::openmeta target; "
+             "disabling it")
+    set (OpenMeta_FOUND FALSE)
+endif ()
+
 option (USE_R3DSDK "Enable R3DSDK (RED camera) support" OFF)
 checked_find_package (R3DSDK NO_RECORD_NOTFOUND)  # RED camera
 

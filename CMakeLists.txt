@@ -249,6 +249,11 @@ include_directories (
 # Tell CMake to process the sub-directories
 add_subdirectory (src/libutil)
 
+if (OpenMeta_FOUND AND TARGET OpenMeta::openmeta
+        AND NOT BUILD_OIIOUTIL_ONLY)
+    add_subdirectory (src/openmeta.bridge)
+endif ()
+
 # Add IO plugin directories -- if we are embedding plugins, we need to visit
 # these directories BEFORE the OpenImageIO target is established (in
 # src/libOpenImageIO). For each plugin, we append to the lists of source
