@@ -1,0 +1,4 @@
+Make=OpenMetaCamera
+Orientation=6
+XMP rating=4
+ColorSpace=srgb_rec709_scene
