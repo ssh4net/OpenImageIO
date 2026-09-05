@@ -249,8 +249,10 @@ include_directories (
 # Tell CMake to process the sub-directories
 add_subdirectory (src/libutil)
 
+set (OIIO_OPENMETA_BRIDGE_ENABLED OFF)
 if (OpenMeta_FOUND AND TARGET OpenMeta::openmeta
         AND NOT BUILD_OIIOUTIL_ONLY)
+    set (OIIO_OPENMETA_BRIDGE_ENABLED ON)
     add_subdirectory (src/openmeta.bridge)
 endif ()
 

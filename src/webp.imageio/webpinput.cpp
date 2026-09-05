@@ -28,6 +28,7 @@ struct WebpHead {
 
 
 
+#ifndef OIIO_USE_OPENMETA
 static bool
 webp_exif_payload_has_tiff_header(cspan<uint8_t> exif)
 {
@@ -39,6 +40,7 @@ webp_exif_payload_has_tiff_header(cspan<uint8_t> exif)
     const size_t tiff_header_offset = has_exif_header ? exif_header_size : 0;
     return exif.size() >= tiff_header_offset + sizeof(TIFFHeader);
 }
+#endif
 
 
 #ifdef OIIO_USE_OPENMETA
@@ -231,14 +233,16 @@ WebpInput::open(const std::string& name, ImageSpec& spec,
         m_frame_count = 1;
     }
 
-#ifdef OIIO_USE_OPENMETA
-    const bool openmeta_metadata = decode_openmeta_metadata(*io, m_spec);
-#else
-    constexpr bool openmeta_metadata = false;
-#endif
-
     WebPChunkIterator chunk_iter;
-    if (!openmeta_metadata && m_demux_flags & EXIF_FLAG
+#ifdef OIIO_USE_OPENMETA
+    if (!decode_openmeta_metadata(*io, m_spec)
+        && OIIO::get_int_attribute("imageinput:strict")) {
+        errorfmt("Could not decode metadata with OpenMeta");
+        close();
+        return false;
+    }
+#else
+    if (m_demux_flags & EXIF_FLAG
         && WebPDemuxGetChunk(m_demux, "EXIF", 1, &chunk_iter)) {
         cspan<uint8_t> exif_span(chunk_iter.chunk.bytes, chunk_iter.chunk.size);
         if (webp_exif_payload_has_tiff_header(exif_span)) {
@@ -251,13 +255,14 @@ WebpInput::open(const std::string& name, ImageSpec& spec,
         }
         WebPDemuxReleaseChunkIterator(&chunk_iter);
     }
-    if (!openmeta_metadata && m_demux_flags & XMP_FLAG
+    if (m_demux_flags & XMP_FLAG
         && WebPDemuxGetChunk(m_demux, "XMP ", 1, &chunk_iter)) {
         // FIXME: This is where we would extract XMP. Come back to this when
         // I have found an example webp containing XMP that I can use as a
         // test case, otherwise I'm just guessing.
         WebPDemuxReleaseChunkIterator(&chunk_iter);
     }
+#endif
     if (m_demux_flags & ICCP_FLAG
         && WebPDemuxGetChunk(m_demux, "ICCP", 1, &chunk_iter)) {
         cspan<uint8_t> icc_span(chunk_iter.chunk.bytes, chunk_iter.chunk.size);

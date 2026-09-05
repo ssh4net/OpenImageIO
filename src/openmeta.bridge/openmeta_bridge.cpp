@@ -6,9 +6,13 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <new>
 #include <span>
+#include <string>
+#include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include <openmeta/host_adoption.h>
@@ -278,63 +282,132 @@ namespace {
         return false;
     }
 
+    enum class ExportPass : uint8_t {
+        NativeFlatHost,
+        XmpFlatHost,
+        CanonicalFallback,
+    };
+
+    struct TransparentStringHash final {
+        using is_transparent = void;
+
+        size_t operator()(std::string_view value) const noexcept
+        {
+            return std::hash<std::string_view> {}(value);
+        }
+
+        size_t operator()(const std::string& value) const noexcept
+        {
+            return (*this)(std::string_view(value));
+        }
+    };
+
+    struct ExportState final {
+        std::span<const openmeta::Entry> entries;
+        std::vector<uint8_t> entry_states;
+        std::unordered_set<std::string, TransparentStringHash,
+                           std::equal_to<>>
+            names;
+    };
+
     class ExportSink final : public openmeta::MetadataSink {
     public:
         ExportSink(const openmeta::MetaStore& store, AttributeCallback callback,
-                   void* context) noexcept
+                   void* context, ExportPass pass, ExportState* state) noexcept
             : m_store(store)
             , m_callback(callback)
             , m_context(context)
+            , m_pass(pass)
+            , m_state(state)
         {
         }
 
         void on_item(const openmeta::ExportItem& item) noexcept override
         {
-            if (m_rejected)
+            if (m_rejected || m_out_of_memory || m_failed || !m_state
+                || !item.entry)
                 return;
 
-            AttributeView view;
-            view.name      = item.name.data();
-            view.name_size = item.name.size();
-            if (item.entry) {
-                const std::span<const openmeta::Entry> entries
-                    = m_store.entries();
-                if (!entries.empty() && item.entry >= entries.data()
-                    && item.entry < entries.data() + entries.size()) {
-                    view.source_entry_id = static_cast<uint32_t>(
-                        item.entry - entries.data());
+            try {
+                if (m_state->entries.empty()
+                    || item.entry < m_state->entries.data()
+                    || item.entry
+                           >= m_state->entries.data()
+                                  + m_state->entries.size()) {
+                    m_failed = true;
+                    return;
                 }
+                const size_t entry_index = static_cast<size_t>(
+                    item.entry - m_state->entries.data());
+                if (m_state->entry_states[entry_index] != 0)
+                    return;
+
+                const bool is_xmp
+                    = item.entry->key.kind
+                      == openmeta::MetaKeyKind::XmpProperty;
+                if ((m_pass == ExportPass::NativeFlatHost && is_xmp)
+                    || (m_pass == ExportPass::XmpFlatHost && !is_xmp)) {
+                    return;
+                }
+
+                AttributeView view;
+                view.name            = item.name.data();
+                view.name_size       = item.name.size();
+                view.source_entry_id = static_cast<uint32_t>(entry_index);
                 view.source_block_id = item.entry->origin.block;
                 view.source_order    = item.entry->origin.order_in_block;
-            }
-            view.flags = static_cast<uint8_t>(item.flags);
+                view.flags           = static_cast<uint8_t>(item.flags);
 
-            ScalarStorage scalar;
-            if (!item.entry
-                || !make_value_view(m_store, item.entry->value, &view.value,
-                                    &scalar)) {
-                ++m_skipped;
-                return;
-            }
+                ScalarStorage scalar;
+                if (!make_value_view(m_store, item.entry->value, &view.value,
+                                     &scalar)) {
+                    m_state->entry_states[entry_index] = 2;
+                    ++m_skipped;
+                    return;
+                }
 
-            if (m_callback && !m_callback(m_context, &view)) {
-                m_rejected = true;
-                return;
+                const auto inserted
+                    = m_state->names.emplace(item.name).second;
+                if (!inserted) {
+                    // A flat-name collision remains eligible for the
+                    // canonical pass, which preserves the distinct source.
+                    if (m_pass == ExportPass::CanonicalFallback) {
+                        m_state->entry_states[entry_index] = 2;
+                        ++m_skipped;
+                    }
+                    return;
+                }
+
+                if (m_callback && !m_callback(m_context, &view)) {
+                    m_rejected = true;
+                    return;
+                }
+                m_state->entry_states[entry_index] = 1;
+                ++m_emitted;
+            } catch (const std::bad_alloc&) {
+                m_out_of_memory = true;
+            } catch (...) {
+                m_failed = true;
             }
-            ++m_emitted;
         }
 
         uint32_t emitted() const noexcept { return m_emitted; }
         uint32_t skipped() const noexcept { return m_skipped; }
         bool rejected() const noexcept { return m_rejected; }
+        bool out_of_memory() const noexcept { return m_out_of_memory; }
+        bool failed() const noexcept { return m_failed; }
 
     private:
         const openmeta::MetaStore& m_store;
         AttributeCallback m_callback = nullptr;
         void* m_context              = nullptr;
+        ExportPass m_pass            = ExportPass::NativeFlatHost;
+        ExportState* m_state         = nullptr;
         uint32_t m_emitted           = 0;
         uint32_t m_skipped           = 0;
         bool m_rejected              = false;
+        bool m_out_of_memory         = false;
+        bool m_failed                = false;
     };
 
     DecodeCode
@@ -555,17 +628,50 @@ decode_impl(const Source* source, Format format, const DecodeOptions* options,
         }
 
         if (read.snapshot.store.is_finalized()) {
-            openmeta::ExportOptions export_options;
-            export_options.style       = openmeta::ExportNameStyle::FlatHost;
-            export_options.name_policy = openmeta::ExportNamePolicy::Spec;
-            export_options.include_makernotes = requested.decode_makernote != 0;
-            ExportSink sink(read.snapshot.store, attribute_callback,
-                            attribute_context);
-            openmeta::visit_metadata(read.snapshot.store, export_options, sink);
-            summary.attributes_emitted = sink.emitted();
-            summary.attributes_skipped = sink.skipped();
-            if (sink.rejected()) {
-                summary.code = DecodeCode::AttributeSinkRejected;
+            const std::span<const openmeta::Entry> entries
+                = read.snapshot.store.entries();
+            ExportState export_state { entries,
+                                       std::vector<uint8_t>(entries.size(), 0),
+                                       {} };
+            export_state.names.reserve(entries.size());
+
+            auto export_pass = [&](openmeta::ExportNameStyle style,
+                                   ExportPass pass) -> bool {
+                openmeta::ExportOptions export_options;
+                export_options.style       = style;
+                export_options.name_policy = openmeta::ExportNamePolicy::Spec;
+                export_options.include_makernotes
+                    = requested.decode_makernote != 0;
+                ExportSink sink(read.snapshot.store, attribute_callback,
+                                attribute_context, pass, &export_state);
+                openmeta::visit_metadata(read.snapshot.store, export_options,
+                                         sink);
+                summary.attributes_emitted += sink.emitted();
+                summary.attributes_skipped += sink.skipped();
+                if (sink.rejected()) {
+                    summary.code = DecodeCode::AttributeSinkRejected;
+                    return false;
+                }
+                if (sink.out_of_memory()) {
+                    summary.code = DecodeCode::OutOfMemory;
+                    return false;
+                }
+                if (sink.failed()) {
+                    summary.code = DecodeCode::InternalError;
+                    return false;
+                }
+                return true;
+            };
+
+            // Native typed values own convenient host names. XMP receives
+            // unclaimed flat names, while collisions and structured paths use
+            // stable canonical names instead of being discarded.
+            if (!export_pass(openmeta::ExportNameStyle::FlatHost,
+                             ExportPass::NativeFlatHost)
+                || !export_pass(openmeta::ExportNameStyle::FlatHost,
+                                ExportPass::XmpFlatHost)
+                || !export_pass(openmeta::ExportNameStyle::Canonical,
+                                ExportPass::CanonicalFallback)) {
                 return summary;
             }
         }

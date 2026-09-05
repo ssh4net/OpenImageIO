@@ -158,6 +158,16 @@ endif ()
 checked_find_package (Freetype
                       VERSION_MIN 2.10.0
                       DEFINITIONS USE_FREETYPE=1 )
+if (LINKSTATIC AND TARGET Freetype::Freetype)
+    set (FREETYPE_EXTRA_LIBRARIES "${FREETYPE_EXTRA_LIBRARIES}"
+         CACHE STRING
+         "Additional libraries needed when linking static Freetype")
+    mark_as_advanced (FREETYPE_EXTRA_LIBRARIES)
+    if (FREETYPE_EXTRA_LIBRARIES)
+        target_link_libraries (Freetype::Freetype INTERFACE
+                               ${FREETYPE_EXTRA_LIBRARIES})
+    endif ()
+endif ()
 
 checked_find_package (OpenColorIO REQUIRED
                       VERSION_MIN 2.3
@@ -221,6 +231,12 @@ endif ()
 
 checked_find_package (WebP VERSION_MIN 1.1)
 
+# Discover Highway before OpenMeta. Some optional OpenMeta dependency packages
+# may reuse hwy::hwy, and Highway's export must create its complete target set.
+if (OIIO_USE_HWY)
+    checked_find_package (hwy)
+endif ()
+
 # OpenMeta is an experimental, optional metadata decoder. Keep it disabled by
 # default until individual format integrations have established behavior and
 # performance parity.
@@ -262,11 +278,6 @@ if (USE_QT AND OPENGL_FOUND)
     endif ()
 endif ()
 
-
-# Google Highway for SIMD (optional optimization)
-if (OIIO_USE_HWY)
-    checked_find_package (hwy)
-endif ()
 
 # Tessil/robin-map. Use its own exported CMake config (target tsl::robin_map)
 # rather than a bespoke Find module. This also means that when the nanobind

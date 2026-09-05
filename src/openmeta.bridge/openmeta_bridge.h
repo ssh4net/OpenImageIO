@@ -7,7 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(_WIN32)
+#if defined(OIIO_OPENMETA_BRIDGE_STATIC)
+#    define OIIO_OPENMETA_BRIDGE_API
+#elif defined(_WIN32)
 #    if defined(OIIO_OPENMETA_BRIDGE_EXPORTS)
 #        define OIIO_OPENMETA_BRIDGE_API __declspec(dllexport)
 #    else

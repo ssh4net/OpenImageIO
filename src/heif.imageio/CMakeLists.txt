@@ -22,9 +22,22 @@ if (Libheif_FOUND)
         message ("${ColorReset}")
     endif()
 
+    set (_heif_definitions USE_HEIF=1)
+    if (TARGET heif)
+        get_target_property (_heif_target_type heif TYPE)
+        if (_heif_target_type STREQUAL "STATIC_LIBRARY")
+            list (APPEND _heif_definitions LIBHEIF_STATIC_BUILD)
+        endif ()
+    endif ()
+    if (${_static_libraries_found} GREATER 0)
+        list (APPEND _heif_definitions LIBHEIF_STATIC_BUILD)
+    endif ()
+
     add_oiio_plugin (heifinput.cpp heifoutput.cpp
                      LINK_LIBRARIES heif
-                     DEFINITIONS "USE_HEIF=1")
+                     DEFINITIONS ${_heif_definitions})
+    unset (_heif_definitions)
+    unset (_heif_target_type)
 else ()
     message (WARNING "heif plugin will not be built")
 endif ()
