@@ -153,7 +153,7 @@ struct DiagnosticView final {
 using DiagnosticCallback = bool (*)(void* context,
                                     const DiagnosticView* diagnostic) noexcept;
 using BlobCallback       = bool (*)(void* context, const void* data,
-                              uint64_t size) noexcept;
+                                    uint64_t size) noexcept;
 
 struct DecodeOptions final {
     uint32_t contract_version = BridgeContractVersion;

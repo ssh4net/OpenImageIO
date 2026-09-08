@@ -305,8 +305,7 @@ namespace {
     struct ExportState final {
         std::span<const openmeta::Entry> entries;
         std::vector<uint8_t> entry_states;
-        std::unordered_set<std::string, TransparentStringHash,
-                           std::equal_to<>>
+        std::unordered_set<std::string, TransparentStringHash, std::equal_to<>>
             names;
     };
 
@@ -331,9 +330,8 @@ namespace {
             try {
                 if (m_state->entries.empty()
                     || item.entry < m_state->entries.data()
-                    || item.entry
-                           >= m_state->entries.data()
-                                  + m_state->entries.size()) {
+                    || item.entry >= m_state->entries.data()
+                                         + m_state->entries.size()) {
                     m_failed = true;
                     return;
                 }
@@ -342,9 +340,8 @@ namespace {
                 if (m_state->entry_states[entry_index] != 0)
                     return;
 
-                const bool is_xmp
-                    = item.entry->key.kind
-                      == openmeta::MetaKeyKind::XmpProperty;
+                const bool is_xmp = item.entry->key.kind
+                                    == openmeta::MetaKeyKind::XmpProperty;
                 if ((m_pass == ExportPass::NativeFlatHost && is_xmp)
                     || (m_pass == ExportPass::XmpFlatHost && !is_xmp)) {
                     return;
@@ -366,8 +363,7 @@ namespace {
                     return;
                 }
 
-                const auto inserted
-                    = m_state->names.emplace(item.name).second;
+                const auto inserted = m_state->names.emplace(item.name).second;
                 if (!inserted) {
                     // Retry flat-name collisions with canonical names.
                     if (m_pass == ExportPass::CanonicalFallback) {
@@ -639,8 +635,8 @@ decode_impl(const Source* source, Format format, const DecodeOptions* options,
                 openmeta::ExportOptions export_options;
                 export_options.style       = style;
                 export_options.name_policy = openmeta::ExportNamePolicy::Spec;
-                export_options.include_makernotes
-                    = requested.decode_makernote != 0;
+                export_options.include_makernotes = requested.decode_makernote
+                                                    != 0;
                 ExportSink sink(read.snapshot.store, attribute_callback,
                                 attribute_context, pass, &export_state);
                 openmeta::visit_metadata(read.snapshot.store, export_options,

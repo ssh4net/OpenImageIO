@@ -203,7 +203,7 @@ namespace {
                                              collector->result->sources.end(),
                                              [&](const SourceIdentity& item) {
                                           return item.name == identity.name;
-                                      });
+                                             });
             if (found == collector->result->sources.end())
                 collector->result->sources.emplace_back(std::move(identity));
             else
